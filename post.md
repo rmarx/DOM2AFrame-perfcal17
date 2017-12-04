@@ -23,10 +23,9 @@ img
 This post is about the [DOM2AFrame proof-of-concept (and extremely non-production-ready) library][d2a_github], which **transcodes typical HTML/CSS webpages to WebVR compatible UIs** on-the-fly, while maintaining support for full interaction and animation at good enough&trade; framerates. This fun project has helped us get deeper insights in CSS handling, the browser's rendering pipeline, supported and missing JavaScript APIs and the performance of WebGL. 
 
 Some of the main takeaways:
-- WebGL is amazingly fast and even relatively unoptimized JS code can get you good results 
-- JavaScript cannot (easily) capture all state changes on a webpage (and MutationObserver isn't fantastic in this regard)
-- CSS overflow:hidden and browser font rendering are magical things 
-- TODO
+- Rendering to 2D textures can be slow, but WebGL is amazingly fast and even relatively unoptimized JS code can get you good results. 
+- JavaScript cannot (easily) capture _all_ state changes on a webpage (and MutationObserver isn't fantastic in this regard), which sometimes led to less performant implementations. 
+- People working on CSS/browser engines are wizards.
 
 TODO: add sander's repo to the README of my repo 
 
@@ -177,7 +176,7 @@ While our setup has good performance in theory, in practice there were several i
  
  * When a CSS property has changed, it doesn't tell you _which_ property, just that _something_ in the style has changed. It also won't give you the old value of the property (the *attributeOldValue* was empty or unhelpful when we tried to use it). 
  
- We solved this by keeping our [own cache of usefull CSS properties](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/elements/BaseElement.js#L121). For every Mutation event, we then check our cache vs the getComputedStyle/getBoundingClientRect data to determine which properties have actually changed. This way, we can only trigger a change in A-Frame when really needed. 
+ We solved this by keeping our [own cache of useful CSS properties](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/elements/BaseElement.js#L121). For every Mutation event, we then check our cache vs the getComputedStyle/getBoundingClientRect data to determine which properties have actually changed. This way, we can only trigger a change in A-Frame when really needed. 
  
  To adhere to [known best practices][amp], [we group our calls to getComputedStyle/getBoundingClientRect][layout_trashing] before actually updating anything. In hindsight, this might have been a premature optimization though, since our code never directly updates the DOM but only the `<canvas>` contents, and so there should be no recalculations. We did not notice major performance benefits from this but still... better to be safe than sorry? 
  
@@ -188,35 +187,58 @@ While our setup has good performance in theory, in practice there were several i
  
  We solved this by [looping over all observed elements (not just the children of the changed element!) and checking with their custom caches](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/DOM2AFrame.js#L87) if their positions had changed. By using a cache, this is fast-enough&trade; but it would be better to add some additional logic to actually figure out what _could_ have changed and pre-filter elements based on that.
  
- * Applying more general CSS rules like `* {margin: 15px}` doesn't seem to trigger any Mutation events at all... and as far as we know, there are no other ways to catch these changes in JS. 
+ * Applying more general CSS rules like `* { margin: 15px; }` doesn't seem to trigger any Mutation events at all... and as far as we know, there are no other ways to catch these changes in JS. 
  
  For this, we provide two options to the developer: either they themselves call the `Update()` function if they think this type of rule might have been applied, or they just leave the Update loop on constantly, using [`requestAnimationFrame`](https://developer.mozilla.org/en-US/docs/Web/API/window/requestAnimationFrame). Which brings us to the last point:
  
  * CSS Animations or transitions don't trigger Mutation events. 
  
- For this, we use the separate "animationstart/animationend" and "transitionstart/transitionend" events. Once inside an animation or transition, we loop our calls to requestAnimationFrame until all animations are done. A bit problematic is that the transitionstart event [isn't supported across browsers yet][transitionstart] (shame on you, Chrome!), but luckily we are (a) a fun/research project and (b) thus can require developers to call a method when they know they will start a transition. 
+ For this, we use the separate "animationstart/animationend" and "transitionstart/transitionend" events. Once inside an animation or transition, we make recursive calls to requestAnimationFrame until all animations are done. A bit problematic is that the transitionstart event [isn't supported across browsers yet][transitionstart] (shame on you, Chrome!), but luckily we are (a) a fun/research project and (b) thus can require developers to call a method when they know they will start a transition. 
  
  [transitionstart]: https://developer.mozilla.org/en-US/docs/Web/Events/transitionstart#Browser_compatibility
  
- All of this results in a (relatively) complex [update loop](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/DOM2AFrame.js#L66) that, in hindsight, isn't as optimized as we would have liked or envisioned with our approach. 
+ All of this results in a (relatively) complex [update loop](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/DOM2AFrame.js#L66) that, in hindsight, isn't as optimized as we would have liked or envisioned with our approach. However, we do get good results for our testcases on a good PC (58 FPS on the same testcase as discussed before), though simply leaving the Update() loop running in requestAnimationFrame tends to also slow down after a while on this configuration. 
 
-- MutationObserver doesn't catch everything
-	- changes triggered don't propagate through other elementst -> custom check subtrees (custom caching layer)
-- eventlisteners: no mousemove on everything (a-frame already requires this)
-- requestAnimationFrame (TODO: check if still called!)
-- grouping layout queries (but not sure if that's needed here, since we never directly write to DOM)
+**2. Optimizing input handlers**
+
+Handling input in 3D typically uses the [raycasting/picking method][raycasting], where we check if a line from the camera through the mouse/pointer position intersects with any 3D elements. Since this can be a slow operation, we do not want to have to check each individual element but only the elements that actually have event handlers attached to them. This is not absolutely necessary for discrete click-events, but more continuous events like mousemove need this optimization. 
+
+[raycasting]: https://threejs.org/docs/#api/core/Raycaster
+
+Sadly, there is no way in JS to get a list of registered event listeners for a given event type (i.e., no `el.getEventListeners('mousemove')`). Luckily, JS does allow us to override the .add/.removeEventListener methods on the object prototype! We adapted [this code][listenerListPlugin] to keep track of all [registered event handlers and also properties like .onclick](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/helpers/MouseEventHandler.js) and decide our raycasting based on that information. 
+
+Caveat: just messing around with the prototypes of built-in JS objects _can_ have bad results overall because of how JIT compilers like V8 work (they make certain assumptions that might no longer hold true of you've changed prototypes). I don't understand all of this 100% yet, but can certainly recommend [@bmeurer's](https://twitter.com/bmeurer) tweets and blogposts! In our implementation, we didn't notice slowdowns due to this method. 
+
+[listenerListPlugin]: https://gist.github.com/stringparser/a3b0555fd915138a0ed3 
+
+Amusing anecdote: rendering borders in A-Frame was quite the ordeal because it has not default support for this. We tried out many methods before settling on one that seemed to do everything right... until our mouse hover events really started acting up. I spent roughly 8 hours debugging before I found that the borders (even those of 1px wide!) were seen as valid raycasting targets. This led to _very_ inconsistent firing of extra hover events, often with the wrong target element set... fun times! 
+
+**3. Other**
+
+There were some smaller aspects we encountered/implemented:
+
+* Many pages use wrapper elements that don't really get rendered themselves but mainly help to position their children correctly (e.g., container `<div>`s). If these elements have no direct visual contribution, we can just skip them in A-Frame, see element 4 in Figure 4(d). We found this a bit counter-intuitive (since the A-Frame elements shouldn't draw anything even if they're created), but this small change led to significant speedups in our testcases.  
+
+* CSS overflow handling (e.g., `overflow: hidden;`) was quite complex to do in 3D. While the [2D API provides this out-of-the-box](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/clip), getting this to work in 3D was [considerably more involved](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/elements/BaseElement.js#L599). Three.js has the concept of clipping planes in their standard shaders, but while these work they are [badly documented](https://threejs.org/docs/#api/renderers/WebGLRenderer.clippingPlanes). The problems came when trying to clip Text in A-Frame, which uses a custom library and, consequently, also uses custom shaders... so no Three.js clippingPlanes support. 
+ 
+ The solution was to [manually adjust these shaders to include the Three.js code](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/elements/TextElement.js#L260).
+
+ This method of hiding content overflow works, but is also sub-optimal: the clipping planes are defined per-element (not only on the parent container) and are checked for every pixel/fragment in the fragment shader separately.   
+ 
+** TODO : YOUTUBE VIDEO 3 ** 
+ 
 - hiding invisible wrapper objects 
 - CSS overflow / clipping 
-- borders? 
-
-### Unsupported
 - Hover and pseudo-classes 
-- auto-detect: * { margin: 15px; }
 
-## future work 
+## conclusion and future work 
+many of these optimizations are not web-specific, but more game-engine related etc. but still interesting to see how JS/CSS APIs support building this type of thing. Standards are evolving to allow even more of this (see Houdini) and to make a more generic platform, which is great! 
+
+
 - clearning up code + firefox
 - VDOM render target from react 
 - best way to interact with websites in VR 
+- something is coming.. youtube vid -> let's hope it can make this work obsolete :) 
 
 
 
