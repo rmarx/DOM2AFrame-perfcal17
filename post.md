@@ -20,7 +20,7 @@ img
 
 # DOM2AFrame : Putting the Web back in WebVR
 
-This post is about the [DOM2AFrame proof-of-concept library][d2a_github], which **transcodes typical HTML/CSS webpages to WebVR compatible UIs** on-the-fly, while maintaining support for full interaction and animation at good enough&trade; framerates. This fun project has helped us get deeper insights in CSS handling, the browser's rendering pipeline, supported and missing JavaScript APIs and the performance of WebGL. 
+This post is about the [DOM2AFrame proof-of-concept (and extremely non-production-ready) library][d2a_github], which **transcodes typical HTML/CSS webpages to WebVR compatible UIs** on-the-fly, while maintaining support for full interaction and animation at good enough&trade; framerates. This fun project has helped us get deeper insights in CSS handling, the browser's rendering pipeline, supported and missing JavaScript APIs and the performance of WebGL. 
 
 Some of the main takeaways:
 - WebGL is amazingly fast and even relatively unoptimized JS code can get you good results 
@@ -38,7 +38,7 @@ TODO: add result video here
 ## Browsing the Web in VR 
 
 For my PhD in web performance, I had primarily been looking into network performance, with HTTP/2 and QUIC. 
-To get a bit more acquainted with browser-side performance, together with bachelor student [Sander Vanhove][lamasaurus], we wanted to do something with the hot new kid on the block: [WebVR][webvrrocks]! The topic clickly turned into the question **(How) can we render webpages in 3D/VR**? And related: can we create UIs for games/3D experiences in plain HTML/CSS/JS? 
+To learn more about browser-side performance together with bachelor student [Sander Vanhove][lamasaurus], we wanted to do something with the hot new kid on the block: [WebVR][webvrrocks]! The topic clickly turned into the question **(How) can we render webpages in 3D/VR**? And related: can we create UIs for games/3D experiences in plain HTML/CSS/JS? 
 
 [lamasaurus]: https://github.com/Lamasaurus
 [webvrrocks]: https://webvr.rocks/
@@ -47,7 +47,7 @@ It quickly became apparent that while some modern browsers do offer a _browse in
 
 ** TODO : YOUTUBE VIDEO ** 
 
-Additionally, here is also nothing developers can do about this (yet): while CSS supports various 3D-related properties, there is no CSS media-query for VR that would allow us to make a vr-version of a site (though support for this type of thing [is being worked on][custom-media-queries]). Even then, browsers would need additional directives to allow a full integration.  
+Additionally, here is also nothing developers can do about this (yet): while CSS supports various [3D-related properties][CSS3D], there is nothing like a CSS media-query for VR that would allow us to make a vr-version of a site (though support for this type of thing [is being worked on][custom-media-queries]). Even then, browsers would need additional directives to allow a full integration.  
 
 [custom-media-queries]: https://drafts.csswg.org/mediaqueries-5/#script-custom-mq
 
@@ -131,8 +131,8 @@ As it turns out, neither of the two workarounds offer satisfactory performance. 
 
 Further testing revealed that this is mainly due to the overhead of creating new 2D texture contexts, not how much you actually end up drawing to them. This is why we observed that the two libraries that add VR/3D options, [HTML2Three][html2three] and [HTML-GL][htmlgl], both take a different approach to limit the amount of generated textures: HTML2Three prefers a texture per high-level `<div>` container, while HTML-GL tries to optimize by putting elements that have 3D CSS transform properties on separate "layers", see Figure 4 ([Note that the browser does something similar internally to optimize for animations etc.][Layers]). Most examples that we've seen stay at about 5 separate textures. This means performance can be kept usable in some cases, but severely limits our options for animating and interacting with individual elements. To be fair, is not "the fault" of rasterizeHTML or html2canvas as they were probably never made with high performance in mind, but that doesn't change our problem. 
 
-![Method comparison](images/4_layers.png)
-<div class="caption">Figure 4: Generation of individual textures/3D elements (b-d) vs the DOM representation (a). Element x has a CSS 3D transform set.</div>
+![Method comparison: Layering](images/4_layers.png)
+<div class="caption">Figure 4: Generation of individual textures/3D elements (b-d) vs the DOM representation (a). Element x has a [CSS 3D transform][CSS3D] set.</div>
 
 [dom2texture3]: http://dassur.ma/things/dom2texture/#performance
 [RAIL]: https://developers.google.com/web/fundamentals/performance/rail
@@ -146,7 +146,7 @@ In order to get better performance and thus support large amounts of animated ob
 We quickly deemed working directly with WebGL too daunting. The excellent [Three.js library][threejs] is a better option, but at that time it didn't offer good WebVR support out-of-the-box. Then we came accross [A-Frame, a project made specifically for WebVR by Mozilla][aframe]. A-Frame uses Three.js internally but adds a lot of goodies on top, both for interacting with WebVR and easily creating 3D scenes. For example, A-Frame sports its own HTML-alike syntax, see Figure 5. However, even though it looks and feels like HTML, this syntax doesn't take CSS into account and you cannot use typical HTML tags like `<div>` or `<img>`. 
 
 
-![Method comparison](images/5_aframe.png)
+![A-Frame example](images/5_aframe.png)
 <div class="caption">Figure 5: Simple DOM2AFrame example (not taking into account positioning/layout)</div>
 
 [threejs]: https://threejs.org/
@@ -156,24 +156,67 @@ Thus, [**DOM2AFrame**][d2a_github] was born! We simply loop over all DOM element
 
 Using this setup, we can maintain a direct mapping between DOM elements and their A-Frame 3D equivalents, since both simply exist in JS. This leads to much less overhead when propagating input events and makes it easier to figure out which 3D objects should be updated when something changes in the DOM, when compared to the render-to-texture-first approach. 
 
-TODO: custom CSS. "This works well for rendering elements onto a 2D plane, but if we want to be able to position individual elements in 3D using CSS, we need to go further. CSS does have 3D transforms, but no VR media query. Would mean that site also applies 3D transforms without VR, which we want to avoid. For now: custom properties! in future: custom media query and use existing properties!"
+We hit a snag when trying to position/transform our 3D elements directly via CSS however. We tried using the existing [CSS 3D transform options][CSS3D], but these of course also take effect when watching the webpage outside of DOM2AFrame... and as we've said in the introduction, there is nothing like a media query to indicate to CSS to only apply these transforms in a VR setting. After discussing various options, we finally settled on using [custom CSS properties][customProperties], see Figure 6, which can be read and manipulated from JS. We feel these are similar enough to normal CSS to be clear for developers and they can be replaced by the existing properties when [custom media queries][custom-media-queries] become available. 
 
-This setup has a good performance in theory... in practice there were several issues that make this a bit more difficult. 
+[customProperties]: https://developer.mozilla.org/en-US/docs/Web/CSS/--*
+
+
+![Method comparison](images/6_customCSS.png)
+<div class="caption">Figure 6: Custom CSS properties for 3D transformations (Bullet template from [spyropress][spyropress])</div>
+
+
+[CSS3D]: http://desandro.github.io/3dtransforms/
 
 ### Performance aspects
 
+While our setup has good performance in theory, in practice there were several issues:
+
+**1. Mutation observer**
+
+ Firstly, we rely on [MutationObserver][MutationObserver] to listen for changes in the DOM (e.g., as a result of user interaction) and thus figure out which 3D elements need to change. However, MutationObserver isn't as finegrained or omniscient as we would have hoped: 
+ 
+ * When a CSS property has changed, it doesn't tell you _which_ property, just that _something_ in the style has changed. It also won't give you the old value of the property (the *attributeOldValue* was empty or unhelpful when we tried to use it). 
+ 
+ We solved this by keeping our [own cache of usefull CSS properties](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/elements/BaseElement.js#L121). For every Mutation event, we then check our cache vs the getComputedStyle/getBoundingClientRect data to determine which properties have actually changed. This way, we can only trigger a change in A-Frame when really needed. 
+ 
+ To adhere to [known best practices][amp], [we group our calls to getComputedStyle/getBoundingClientRect][layout_trashing] before actually updating anything. In hindsight, this might have been a premature optimization though, since our code never directly updates the DOM but only the `<canvas>` contents, and so there should be no recalculations. We did not notice major performance benefits from this but still... better to be safe than sorry? 
+ 
+ [amp]: https://www.ampproject.org/learn/about-how/#minimize-style-recalculations
+ [layout_trashing]: https://developers.google.com/web/fundamentals/performance/rendering/avoid-large-complex-layouts-and-layout-thrashing#avoid_layout_thrashing
+ 
+ * If one element's position/width/etc. has changed, this will only trigger a Mutation event on that element, not on any other (child) elements that might have shifted left/right/up/down as a result of this change. 
+ 
+ We solved this by [looping over all observed elements (not just the children of the changed element!) and checking with their custom caches](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/DOM2AFrame.js#L87) if their positions had changed. By using a cache, this is fast-enough&trade; but it would be better to add some additional logic to actually figure out what _could_ have changed and pre-filter elements based on that.
+ 
+ * Applying more general CSS rules like `* {margin: 15px}` doesn't seem to trigger any Mutation events at all... and as far as we know, there are no other ways to catch these changes in JS. 
+ 
+ For this, we provide two options to the developer: either they themselves call the `Update()` function if they think this type of rule might have been applied, or they just leave the Update loop on constantly, using [`requestAnimationFrame`](https://developer.mozilla.org/en-US/docs/Web/API/window/requestAnimationFrame). Which brings us to the last point:
+ 
+ * CSS Animations or transitions don't trigger Mutation events. 
+ 
+ For this, we use the separate "animationstart/animationend" and "transitionstart/transitionend" events. Once inside an animation or transition, we loop our calls to requestAnimationFrame until all animations are done. A bit problematic is that the transitionstart event [isn't supported across browsers yet][transitionstart] (shame on you, Chrome!), but luckily we are (a) a fun/research project and (b) thus can require developers to call a method when they know they will start a transition. 
+ 
+ [transitionstart]: https://developer.mozilla.org/en-US/docs/Web/Events/transitionstart#Browser_compatibility
+ 
+ All of this results in a (relatively) complex [update loop](https://github.com/rmarx/DOM2AFrame/blob/master/framework_comparisons/dom2aframe/js/dom2aframe/DOM2AFrame.js#L66) that, in hindsight, isn't as optimized as we would have liked or envisioned with our approach. 
+
 - MutationObserver doesn't catch everything
 	- changes triggered don't propagate through other elementst -> custom check subtrees (custom caching layer)
-- eventlisteners
+- eventlisteners: no mousemove on everything (a-frame already requires this)
 - requestAnimationFrame (TODO: check if still called!)
 - grouping layout queries (but not sure if that's needed here, since we never directly write to DOM)
-- CSS overflow 
+- hiding invisible wrapper objects 
+- CSS overflow / clipping 
+- borders? 
 
 ### Unsupported
 - Hover and pseudo-classes 
 - auto-detect: * { margin: 15px; }
 
-
+## future work 
+- clearning up code + firefox
+- VDOM render target from react 
+- best way to interact with websites in VR 
 
 
 
